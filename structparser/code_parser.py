@@ -6,13 +6,14 @@ import queue
 from basic_type import *
 
 class CodeParser(StrCrtl):
-    def __init__(self) -> None:
+    def __init__(self, inline_mode = False) -> None:
         super().__init__()
         self.text = []
         self._base_index = 0
         self._text_index = 0
         self._file_path = None
         self._ready = False
+        self._inline_mode = inline_mode
         self.object = {'base': {}, 'type': {}, 'base_index': {}}
         self._regex_new_type = r'([a-z0-9A-Z_\(\), ]+)'
         self._regex_oneline_typedef = r'^typedef ([a-z0-9A-Z_\(\), ]+ (\*)?)' + self._regex_new_type + r';'
@@ -25,28 +26,35 @@ class CodeParser(StrCrtl):
         self._ready = True
         
     def find(self, type_name, iterate=True):
+        text = []
         if not self._ready:
             print("Use --select-db to specify a database")
-            return
+            return ''
         if type_name not in self.object['type']:
-            return
+            return ''
         seen_type = set()
         q = queue.Queue()
         q.put(type_name)
         while not q.empty():
             type_name = q.get(block=False)
             seen_type.add(type_name)
-            self._print_type_info(type_name)
+            res = self._print_type_info(type_name)
+            if res != '':
+                text.append(res)
             if iterate:
                 for each in self._get_nested_type(type_name):
                     if each not in seen_type:
                         q.put(each)
+        return "\n".join(text)
     
     def _print_type_info(self, type_name):
         if type_name in self.object['type']:
             index = self.object['type'][type_name]
             type_data = self.object['base'][str(index)]
-            print(type_data['type_content'])
+            if not self._inline_mode:
+                print(type_data['type_content'])
+            return type_data['type_content']
+        return ''
     
     def _get_nested_type(self, type_name):
         res = []

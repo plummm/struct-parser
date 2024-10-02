@@ -35,4 +35,4 @@ if __name__ == '__main__':
             print("Use --select-db to specify a database")
             exit(0)
         codep.init_db(args.select_db)
-        codep.find(args.find)
+        codep.find(args.find, iterate=args.expand)
