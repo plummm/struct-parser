@@ -1,0 +1,188 @@
+import re
+import os
+import json
+import queue
+
+from basic_type import *
+
+class CodeParser(StrCrtl):
+    def __init__(self) -> None:
+        super().__init__()
+        self.text = []
+        self._base_index = 0
+        self._text_index = 0
+        self._file_path = None
+        self._ready = False
+        self.object = {'base': {}, 'type': {}, 'base_index': {}}
+        self._regex_new_type = r'([a-z0-9A-Z_\(\), ]+)'
+        self._regex_oneline_typedef = r'^typedef ([a-z0-9A-Z_\(\), ]+ (\*)?)' + self._regex_new_type + r';'
+        self._regex_struct_typedef = r'^typedef (struct|enum|union) ([a-z0-9A-Z _]+)?( {)?'
+        self._regex_struct = r'(struct|enum|union) ([a-z0-9A-Z _]+)?( {)?'
+        self._regex_struct_new_type = r'^} ' + self._regex_new_type + r';'
+    
+    def init_db(self, db_path):
+        self.object = json.load(open(db_path, 'r'))
+        self._ready = True
+        
+    def find(self, type_name, iterate=True):
+        if not self._ready:
+            print("Use --select-db to specify a database")
+            return
+        if type_name not in self.object['type']:
+            return
+        seen_type = set()
+        q = queue.Queue()
+        q.put(type_name)
+        while not q.empty():
+            type_name = q.get(block=False)
+            seen_type.add(type_name)
+            self._print_type_info(type_name)
+            if iterate:
+                for each in self._get_nested_type(type_name):
+                    if each not in seen_type:
+                        q.put(each)
+    
+    def _print_type_info(self, type_name):
+        if type_name in self.object['type']:
+            index = self.object['type'][type_name]
+            type_data = self.object['base'][str(index)]
+            print(type_data['type_content'])
+    
+    def _get_nested_type(self, type_name):
+        res = []
+        if type_name in self.object['type']:
+            index = self.object['type'][type_name]
+            type_data = self.object['base'][str(index)]
+            type_name = type_data['type_name']
+            res.append(type_name)
+            res.extend(type_data['refer_type'])
+        return res
+    
+    def parse_typedef(self, index):
+        line = self.text[index]
+        line = self._remove_noisy_ending(line)
+        # ending with ';'
+        if self.regx_match(self._regex_oneline_typedef, line):
+            m = self.regex_getall(self._regex_oneline_typedef, line)
+            try:
+                base_type = m[0][0]
+                new_type = m[0][2]
+                obj = Oneline()
+                obj.type_cast = new_type
+                obj.type_from = base_type
+                obj.raw_data = line
+            except:
+                return -1
+            self.add_object(base_type, obj)
+            return index + 1
+        # ending with '}'
+        if self.regx_match(self._regex_struct_typedef, line):
+            base_type = self.regex_get(self._regex_struct_typedef, line, 1)
+            if base_type == None:
+                base_type = self.name_empty_base_type(line)
+            [struct_obj, new_index] = self.extract_struct(index)
+            self.add_object(base_type, struct_obj)
+            return new_index
+        self.report_error_index("new typedef")
+        return index + 1
+            
+    def extract_struct(self, index):
+        line = self.text[index]
+        key = self.regex_get(self._regex_struct, line, 0)
+        skip_comment = False
+        if key == 'struct':
+            obj = Struct()
+        if key == 'enum':
+            obj = Enum()
+        if key == 'union':
+            obj = Union()
+        for i in range(index, len(self.text)):
+            line = self.text[i]
+            no_space_line = self._remove_noisy_begining(line)
+            if '*/' in line and skip_comment:
+                skip_comment = False
+                continue
+            if skip_comment:
+                continue
+            if line.startswith('}'):
+                new_type = self.regex_get(self._regex_struct_new_type, line, 0)
+                data = "".join(self.text[index: i+1])
+                obj.type_cast = new_type
+                obj.raw_data = data
+                return [obj, i+1]
+            if not no_space_line.startswith('/*') or no_space_line.startswith('//'):
+                obj.parse_field(line)
+            if '/*' in line and '*/' not in line:
+                skip_comment = True
+        return [None, -1]
+    
+    def name_empty_base_type(self, line):
+        key = self.regex_get(self._regex_struct_typedef, line, 0)
+        return "{}_{}".format(key, self._text_index+1)
+    
+    def add_object(self, base_type, struct_obj: Struct):
+        new_type = struct_obj.type_cast
+        text = struct_obj.raw_data
+        if new_type == None:
+            return
+        base_type = self._remove_noisy_ending(base_type)
+        new_type = self._remove_noisy_ending(new_type)
+        if base_type not in self.object['base_index']:
+            self.object['base_index'][base_type] = self._base_index
+            self._base_index += 1
+        base_index = self.object['base_index'][base_type]
+        if base_index not in self.object['base']:
+            self.object['base'][base_index] = {'type_name': base_type, 'type_content': text, 'refer_type': []}
+            if struct_obj.type != 'enum':
+                field_type = set()
+                for field in struct_obj.fields:
+                    field_type.add(field['field_type'])
+                self.object['base'][base_index]['refer_type'] = list(field_type)
+        if new_type not in self.object['type']:
+            self.object['type'][new_type] = base_index
+        else:
+            if self.object['type'][new_type] != base_index:
+                self.report_error_index("duplicate type {}".format(new_type))
+        
+    def build_db(self, file_path, db_path):
+        fp = open(file_path, 'r')
+        self._file_path = file_path
+        self.text = fp.readlines()
+        self._text_index = 0
+        while self._text_index < len(self.text):
+            line = self.text[self._text_index]
+            if line.startswith('typedef'):
+                new_index = self.parse_typedef(self._text_index)
+                if new_index != -1:
+                    self._text_index = new_index
+                    continue
+                else:
+                    self.report_error_index("unhandled type")
+            self._text_index += 1
+        self.dump_db(db_path)
+        
+    def dump_db(self, db_path):
+        if os.path.exists(db_path):
+            print("\"{}\" already exist, fail to create database")
+            return
+        fp = open(db_path, 'w')
+        json.dump(self.object, fp)
+                
+    def report_error_index(self, msg):
+        print("Error ({}): fail to parse struct at {}:{}".format(msg, self._file_path, self._text_index+1))
+                
+    def regex_get(self, regex, line, index):
+        m = re.search(regex, line)
+        if m != None and len(m.groups()) > index:
+            return m.groups()[index]
+        return None
+    
+    def regex_getall(self, regex, line):
+        m = re.findall(regex, line, re.MULTILINE)
+        return m
+    
+    def regx_match(self, regex, line):
+        m = re.search(regex, line)
+        if m != None and len(m.group()) != 0:
+            return True
+        return False
