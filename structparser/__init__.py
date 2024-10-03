@@ -1,1 +1,1 @@
-from code_parser import CodeParser
+from .code_parser import CodeParser
