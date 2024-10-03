@@ -3,7 +3,7 @@ import os
 import json
 import queue
 
-from structparser.basic_type import *
+from .basic_type import *
 
 class CodeParser(StrCrtl):
     def __init__(self, inline_mode = False) -> None:

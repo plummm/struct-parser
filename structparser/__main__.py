@@ -2,7 +2,7 @@ import sys, os
 sys.path.append(os.getcwd())
 
 import argparse
-from code_parser import CodeParser
+from structparser import code_parser
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Ftrace Parser')
@@ -18,7 +18,7 @@ def build_db(file_path, db_path):
 
 if __name__ == '__main__':
     args = parse_args()
-    codep = CodeParser()
+    codep = code_parser.CodeParser()
     
     if args.build_db != None or args.source_file != None:
         if args.build_db == None:
