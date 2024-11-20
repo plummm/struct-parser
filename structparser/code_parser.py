@@ -16,10 +16,11 @@ class CodeParser(StrCrtl):
         self._inline_mode = inline_mode
         self.object = {'base': {}, 'type': {}, 'base_index': {}}
         self._regex_new_type = r'([a-z0-9A-Z_\(\), ]+)'
-        self._regex_oneline_typedef = r'^typedef ([a-z0-9A-Z_\(\), ]+ (\*)?)' + self._regex_new_type + r';'
+        self._regex_oneline_typedef = r'^typedef ([a-z0-9A-Z_\(\), ]+ (\*)?(( )+)?)' + self._regex_new_type + r';'
         self._regex_struct_typedef = r'^typedef (struct|enum|union) ([a-z0-9A-Z _]+)?( {)?'
         self._regex_struct = r'(struct|enum|union) ([a-z0-9A-Z _]+)?( {)?'
         self._regex_struct_new_type = r'^} ' + self._regex_new_type + r';'
+        self._regex_define = r'^#define ([a-z0-9A-Z_\(\)-]+) (.*)'
     
     def init_db(self, db_path):
         self.object = json.load(open(db_path, 'r'))
@@ -65,16 +66,43 @@ class CodeParser(StrCrtl):
             res.append(type_name)
             res.extend(type_data['refer_type'])
         return res
-    
+    def parse_define(self, index):
+        line = self.text[index]
+        line = self._remove_noisy_ending(line)
+        
+        base_type = self.regex_get(self._regex_define, line, 0)
+        value = self.regex_get(self._regex_define, line, 1)
+        if line[-1] == '\\':
+            new_index = index
+            while True:
+                new_index += 1
+                line += self.text[new_index]
+                line = self._remove_noisy_ending(line)
+                if line[-1] != '\\':
+                    break
+                obj = Oneline()
+                obj.type_cast = ""
+                obj.type_from = base_type
+                obj.raw_data = value + '\n' + self.text[index+1: new_index+1]
+                self.add_object(base_type, obj, ignore_type_cast=True)
+                return new_index + 1
+        else:
+            obj = Oneline()
+            obj.type_cast = value
+            obj.type_from = base_type
+            obj.raw_data = line
+            self.add_object(base_type, obj, ignore_type_cast=True)
+            return index + 1
+        
     def parse_typedef(self, index):
         line = self.text[index]
         line = self._remove_noisy_ending(line)
         # ending with ';'
-        if self.regx_match(self._regex_oneline_typedef, line):
+        if self.regex_match(self._regex_oneline_typedef, line):
             m = self.regex_getall(self._regex_oneline_typedef, line)
             try:
                 base_type = m[0][0]
-                new_type = m[0][2]
+                new_type = m[0][4]
                 obj = Oneline()
                 obj.type_cast = new_type
                 obj.type_from = base_type
@@ -84,7 +112,7 @@ class CodeParser(StrCrtl):
             self.add_object(base_type, obj)
             return index + 1
         # ending with '}'
-        if self.regx_match(self._regex_struct_typedef, line):
+        if self.regex_match(self._regex_struct_typedef, line):
             base_type = self.regex_get(self._regex_struct_typedef, line, 1)
             if base_type == None:
                 base_type = self.name_empty_base_type(line)
@@ -128,17 +156,24 @@ class CodeParser(StrCrtl):
         key = self.regex_get(self._regex_struct_typedef, line, 0)
         return "{}_{}".format(key, self._text_index+1)
     
-    def add_object(self, base_type, struct_obj: Struct):
+    def add_object(self, base_type, struct_obj: Struct, ignore_type_cast = False):
         new_type = struct_obj.type_cast
         text = struct_obj.raw_data
         if new_type == None:
             return
-        base_type = self._remove_noisy_ending(base_type)
-        new_type = self._remove_noisy_ending(new_type)
-        if base_type not in self.object['base_index']:
-            self.object['base_index'][base_type] = self._base_index
+        base_type = self.clean_str(base_type)
+        new_type = self.clean_str(new_type)
+        if ignore_type_cast:
+            type_cast = base_type
+        else:
+            type_cast = new_type
+        if type_cast not in self.object['type']:
+            self.object['type'][type_cast] = self._base_index
             self._base_index += 1
-        base_index = self.object['base_index'][base_type]
+        else:
+            self.report_error_index("duplicate type {}".format(type_cast))
+        
+        base_index = self.object['type'][type_cast]
         if base_index not in self.object['base']:
             self.object['base'][base_index] = {'type_name': base_type, 'type_content': text, 'refer_type': []}
             if struct_obj.type != 'enum':
@@ -146,11 +181,6 @@ class CodeParser(StrCrtl):
                 for field in struct_obj.fields:
                     field_type.add(field['field_type'])
                 self.object['base'][base_index]['refer_type'] = list(field_type)
-        if new_type not in self.object['type']:
-            self.object['type'][new_type] = base_index
-        else:
-            if self.object['type'][new_type] != base_index:
-                self.report_error_index("duplicate type {}".format(new_type))
         
     def build_db(self, file_path, db_path):
         fp = open(file_path, 'r')
@@ -166,18 +196,25 @@ class CodeParser(StrCrtl):
                     continue
                 else:
                     self.report_error_index("unhandled type")
+            if line.startswith('#define'):
+                new_index = self.parse_define(self._text_index)
+                if new_index != -1:
+                    self._text_index = new_index
+                    continue
+                else:
+                    self.report_error_index("unhandled define")
             self._text_index += 1
         self.dump_db(db_path)
         
     def dump_db(self, db_path):
         if os.path.exists(db_path):
-            print("\"{}\" already exist, fail to create database")
+            print("\"{}\" already exist, fail to create database".format(db_path))
             return
         fp = open(db_path, 'w')
         json.dump(self.object, fp)
                 
     def report_error_index(self, msg):
-        print("Error ({}): fail to parse struct at {}:{}".format(msg, self._file_path, self._text_index+1))
+        print("Error ({}): fail to parse object at {}:{}".format(msg, self._file_path, self._text_index+1))
                 
     def regex_get(self, regex, line, index):
         m = re.search(regex, line)
@@ -189,7 +226,7 @@ class CodeParser(StrCrtl):
         m = re.findall(regex, line, re.MULTILINE)
         return m
     
-    def regx_match(self, regex, line):
+    def regex_match(self, regex, line):
         m = re.search(regex, line)
         if m != None and len(m.group()) != 0:
             return True

@@ -27,7 +27,7 @@ if __name__ == '__main__':
         if args.source_file == None:
             print("--source-file is required for building database")
             exit(0)
-        build_db(args.build_db, args.source_file)
+        build_db(args.source_file, args.build_db)
         exit(0)
         
     if args.find != None:
