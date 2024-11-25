@@ -26,14 +26,17 @@ class CodeParser(StrCrtl):
         self.object = json.load(open(db_path, 'r'))
         self._ready = True
         
-    def find(self, type_name, iterate=True):
+    def find(self, type_name, ignore, iterate=True):
         text = []
         if not self._ready:
             print("Use --select-db to specify a database")
             return ''
         if type_name not in self.object['type']:
             return ''
-        seen_type = set()
+        if ignore != None:
+            seen_type = set(ignore.split(','))
+        else:
+            seen_type = set()
         q = queue.Queue()
         q.put(type_name)
         while not q.empty():
@@ -80,12 +83,14 @@ class CodeParser(StrCrtl):
                 line = self._remove_noisy_ending(line)
                 if line[-1] != '\\':
                     break
-                obj = Oneline()
-                obj.type_cast = ""
-                obj.type_from = base_type
-                obj.raw_data = value + '\n' + self.text[index+1: new_index+1]
-                self.add_object(base_type, obj, ignore_type_cast=True)
+            if base_type == None or value == None:
                 return new_index + 1
+            obj = Oneline()
+            obj.type_cast = ""
+            obj.type_from = base_type
+            obj.raw_data = value + '\n' + self.text[index+1: new_index+1]
+            self.add_object(base_type, obj, ignore_type_cast=True)
+            return new_index + 1
         else:
             obj = Oneline()
             obj.type_cast = value
